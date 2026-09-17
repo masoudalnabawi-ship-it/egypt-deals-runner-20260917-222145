@@ -414,6 +414,7 @@ async def send_cloud_review(deal, fp, report, signal=None):
                 report is not None
                 and bool(getattr(report, "verified", False))
             )
+            or direct_store_evidence(deal)
             or getattr(deal, "live_rechecked", None) is True
             or bool(signal.get("history_verified"))
             or bool(signal.get("market_verified"))
