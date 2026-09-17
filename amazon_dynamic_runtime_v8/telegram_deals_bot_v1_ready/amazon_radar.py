@@ -5724,9 +5724,9 @@ async def full_v5_watchlist_once():
 
     # Faster only while Amazon is healthy.
     batch_size = (
-        6
+        12
         if AMAZON_SUCCESS_STREAK >= 8
-        else 4
+        else 8
     )
 
     batch = items[:batch_size]
@@ -6437,6 +6437,20 @@ async def ingest_amazon_direct_surface(name, items):
             ),
             drop,
         )
+
+        # GLOBAL 5%+ POLICY:
+        # Any visible Amazon listing discount >=5% from ANY department
+        # gets priority exact product-page verification.
+        if drop >= 5.0:
+            rec["global_deep_v95_priority"] = max(
+                int(rec.get("global_deep_v95_priority", 0) or 0),
+                88,
+            )
+            rec["manual_watch"] = True
+            rec["priority_boost_until"] = max(
+                int(rec.get("priority_boost_until", 0) or 0),
+                now + 7200,
+            )
 
         # Used-condition priority remains unchanged.
         if name == "used_like_new":

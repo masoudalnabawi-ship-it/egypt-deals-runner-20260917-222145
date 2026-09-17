@@ -48,11 +48,11 @@ AMAZON_READY_HOME = os.getenv("AMAZON_READY_HOME", os.path.expanduser("~/amazon_
 
 # V11 FAST SAFE: bounded store fetches + in-process circuit breakers.
 V11_FAST_STORE_TIMEOUTS = {
-    "noon": 18,
+    "noon": 30,
     "noon_minutes": 14,
     "jumia": 45,
-    "2b": 22,
-    "btech": 22,
+    "2b": 28,
+    "btech": 28,
     "raya": 22,
     "dream2000": 20,
     "carrefour": 20,
@@ -98,11 +98,11 @@ V11_STORE_PRIORITY = {
 
 V11_STORE_VERIFY_QUOTA = {
     "amazon": 4,
-    "noon": 3,
+    "noon": 8,
     "noon_minutes": 1,
     "jumia": 3,
-    "2b": 1,
-    "btech": 1,
+    "2b": 8,
+    "btech": 8,
     "raya": 1,
     "dream2000": 1,
     "carrefour": 1,
