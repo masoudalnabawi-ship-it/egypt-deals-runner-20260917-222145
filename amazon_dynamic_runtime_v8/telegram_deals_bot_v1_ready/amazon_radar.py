@@ -44,7 +44,136 @@ class _AmazonLocalReviewResponse:
             "local_queue": True
         }
 
+
+async def _capture_amazon_page_screenshot(url):
+    """Capture a real Amazon product-page viewport for Telegram review."""
+    import base64
+
+    if not str(url or "").startswith("http"):
+        return None
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        print("📸 AMAZON SCREENSHOT SKIP playwright:", repr(exc), flush=True)
+        return None
+
+    browser = None
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                channel="chrome",
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+
+            context = await browser.new_context(
+                viewport={"width": 720, "height": 1280},
+                device_scale_factor=1,
+                is_mobile=True,
+                has_touch=True,
+                locale="ar-EG",
+                user_agent=(
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/152.0.0.0 Mobile Safari/537.36"
+                ),
+                extra_http_headers={
+                    "Accept-Language": "ar-EG,ar;q=0.9,en;q=0.8"
+                },
+            )
+
+            page = await context.new_page()
+
+            await page.goto(
+                str(url),
+                wait_until="domcontentloaded",
+                timeout=15000,
+            )
+
+            await page.wait_for_timeout(1500)
+
+            title = (await page.title()).lower()
+
+            try:
+                body = (await page.locator("body").inner_text(timeout=3000)).lower()
+            except Exception:
+                body = ""
+
+            blocked = (
+                "robot check" in title
+                or "enter the characters you see below" in body
+                or "أدخل الأحرف التي تراها" in body
+                or "captcha" in title
+            )
+
+            if blocked:
+                print("📸 AMAZON SCREENSHOT SKIP captcha/robot-check", flush=True)
+                await context.close()
+                await browser.close()
+                return None
+
+            markers = await page.locator(
+                "#productTitle, #title, #title_feature_div, input#ASIN, #dp"
+            ).count()
+
+            if markers <= 0:
+                print("📸 AMAZON SCREENSHOT SKIP product-page marker missing", flush=True)
+                await context.close()
+                await browser.close()
+                return None
+
+            shot = await page.screenshot(
+                type="jpeg",
+                quality=62,
+                full_page=False,
+            )
+
+            await context.close()
+            await browser.close()
+
+            if not shot or len(shot) > 7_000_000:
+                print("📸 AMAZON SCREENSHOT SKIP invalid size", flush=True)
+                return None
+
+            print(
+                "📸 AMAZON PAGE SCREENSHOT OK",
+                len(shot),
+                "bytes",
+                flush=True,
+            )
+
+            return {
+                "page_screenshot_b64": base64.b64encode(shot).decode("ascii"),
+                "page_screenshot_mime": "image/jpeg",
+            }
+
+    except Exception as exc:
+        print("📸 AMAZON SCREENSHOT ERROR", repr(exc), flush=True)
+        try:
+            if browser:
+                await browser.close()
+        except Exception:
+            pass
+        return None
+
+
 async def _send_amazon_independent_review(payload):
+    try:
+        shot = await asyncio.wait_for(
+            _capture_amazon_page_screenshot(payload.get("url")),
+            timeout=20,
+        )
+        if shot:
+            payload.update(shot)
+    except Exception as exc:
+        print("📸 AMAZON SCREENSHOT TIMEOUT/ERROR", repr(exc), flush=True)
+
     """Send Amazon review candidates to the existing Cloudflare moderation API.
 
     GitHub Actions has no always-on local review bot, so Cloudflare owns
