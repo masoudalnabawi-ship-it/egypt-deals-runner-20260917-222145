@@ -1,0 +1,14 @@
+EGYPT DEALS BOT — FINAL READY DEV
+Timestamp: 20260916_134854
+V11 PID: 1128
+Amazon worker PID: 17141
+
+Amazon: existing external live radar is primary and untouched.
+V11 Amazon scanner: OFF.
+Duplicate Amazon bridge: OFF.
+Noon: DEGRADED and isolated from hot scan.
+Active V11 stores: Jumia, 2B, B.TECH, Raya, Dream2000, Carrefour, Raneen, Kenzz.
+Kenzz: guarded / last priority.
+Verified thresholds: 40-59 Fast Lane, 60-79 TRUE ULTRA, 80+ SUPER ULTRA.
+Telegram auth/config: passed in the immediately preceding finalizer run.
+Production: untouched.

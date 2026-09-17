@@ -1,0 +1,73 @@
+name: Egypt Deals Scan
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: egypt-deals-scanner
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
+      CLOUD_API_KEY: ${{ secrets.CLOUD_API_KEY }}
+      DIRECT_FLASH_REVIEW: "false"
+      V11_ENABLED_STORES: "noon,noon_minutes,jumia,2b,btech,raya,dream2000,carrefour,raneen,kenzz"
+      ENABLED_STORES: "noon,noon_minutes,jumia,2b,btech,raya,dream2000,carrefour,raneen,kenzz"
+      MIN_DISCOUNT_PERCENT: "5"
+      MIN_SAVING_EGP: "0"
+      MAX_POSTS_PER_CYCLE: "10"
+      MAX_VERIFY_CANDIDATES: "20"
+      REQUEST_TIMEOUT_SECONDS: "20"
+      STRICT_VERIFICATION: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            telegram_deals_bot_v7_dev/requirements.txt
+            amazon_dynamic_runtime_v8/telegram_deals_bot_v1_ready/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r telegram_deals_bot_v7_dev/requirements.txt
+          pip install -r amazon_dynamic_runtime_v8/telegram_deals_bot_v1_ready/requirements.txt
+
+      - name: Restore runtime state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash scripts/state.sh hydrate
+
+      - name: Non-Amazon stores — one verified scan
+        run: python scripts/run_v11_once.py
+
+      - name: Amazon — bounded priority scan
+        run: python scripts/run_amazon_once.py
+
+      - name: Collect runtime state
+        if: always()
+        run: bash scripts/state.sh collect
+
+      - name: Persist runtime state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-state
+          path: .runtime_state/
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 6

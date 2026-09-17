@@ -1,0 +1,238 @@
+[
+  {
+    "store": "jumia",
+    "status": "OK",
+    "seconds": 39.48,
+    "fetched": 343,
+    "real_5_plus": 341,
+    "with_old_price": 343,
+    "with_image": 343,
+    "samples": [
+      {
+        "title": "Honor هاتف X5c Plus ثنائي الشريحة 4G سعة 128 جيجابايت/4 جيجابايت - أسود ليلي",
+        "current_price": 8699.0,
+        "old_price": 9899.0,
+        "discount_percent": 12.1,
+        "url": "https://www.jumia.com.eg/ar/honor-x5c-plus-dual-sim-4g-128gb4gb-midnight-black-133885513.html",
+        "image_url": "https://eg.jumia.is/unsafe/fit-in/300x300/filters:fill(white)/product/31/5588331/1.jpg?4225"
+      },
+      {
+        "title": "Honor HONOR CHOICE Smart Watch BOT-WB01 AMOLED Display Bluetooth Calling - Black Special",
+        "current_price": 2399.0,
+        "old_price": 2640.0,
+        "discount_percent": 9.1,
+        "url": "https://www.jumia.com.eg/ar/honor-honor-choice-smart-watch-bot-wb01-amoled-display-bluetooth-calling-black-special-134405821.html",
+        "image_url": "https://eg.jumia.is/unsafe/fit-in/300x300/filters:fill(white)/product/12/8504431/1.jpg?6518"
+      },
+      {
+        "title": "عبوات حفظ طعام للتوابل، مصنوعة من الخزف والخيزران، مجموعة من 3 قطع، سعة 350 مل",
+        "current_price": 562.5,
+        "old_price": 799.0,
+        "discount_percent": 29.6,
+        "url": "https://www.jumia.com.eg/ar/generic-350ml-white-porcelain-spice-box-set-with-bamboo-pyramid-wood-holder-for-coffee-tea-sugar-135038669.html",
+        "image_url": "https://eg.jumia.is/unsafe/fit-in/300x300/filters:fill(white)/product/96/6830531/1.jpg?4258"
+      }
+    ]
+  },
+  {
+    "store": "2b",
+    "status": "OK",
+    "seconds": 1.56,
+    "fetched": 59,
+    "real_5_plus": 59,
+    "with_old_price": 59,
+    "with_image": 0,
+    "samples": [
+      {
+        "title": "جي بي إل مكبر صوت Boombox 4 بلوتوث ضد المياه و الغبار - أسود",
+        "current_price": 27699.0,
+        "old_price": 40999.0,
+        "discount_percent": 32.4,
+        "url": "https://2b.com.eg/ar/jbl-boombox-4-portable-bluetooth-speaker-ip68-black.html",
+        "image_url": null
+      },
+      {
+        "title": "شاومي MI سكوتر كهربائي 4 لايت الجيل الثاني - أسود",
+        "current_price": 23999.0,
+        "old_price": 31999.0,
+        "discount_percent": 25.0,
+        "url": "https://2b.com.eg/ar/xiaomi-mi-electric-scooter-4-lite-2nd-generation-black.html",
+        "image_url": null
+      },
+      {
+        "title": "فريش تكييف تربو 1.5 حصان - بارد - موديلFUFW12C/O-X2/FUFW12C/IW-AG",
+        "current_price": 20499.0,
+        "old_price": 28399.0,
+        "discount_percent": 27.8,
+        "url": "https://2b.com.eg/ar/fresh-turbo-air-condition-1-5-hp-cooling-fufw12c-o-x2-fufw12c-iw-ag.html",
+        "image_url": null
+      }
+    ]
+  },
+  {
+    "store": "noon",
+    "status": "OK",
+    "seconds": 50.89,
+    "fetched": 0,
+    "real_5_plus": 0,
+    "with_old_price": 0,
+    "with_image": 0,
+    "samples": []
+  },
+  {
+    "store": "btech",
+    "status": "OK",
+    "seconds": 1.78,
+    "fetched": 5,
+    "real_5_plus": 3,
+    "with_old_price": 5,
+    "with_image": 0,
+    "samples": [
+      {
+        "title": "ماكينة قهوة اتوماتيك ديلونجى ماجنيفيكا ايفو نكست ، سعة 1.8 لتر ، 1450 وات ، فضى واسود - ECAM310.8.SB",
+        "current_price": 67279.0,
+        "old_price": 75970.78,
+        "discount_percent": 11.4,
+        "url": "https://btech.com/ar/p/5c563334-f49e-4c7d-aa7e-c16a86db1d8f",
+        "image_url": null
+      },
+      {
+        "title": "ماكينة حلاقة كهرباء براون سيريس 5 ، اسود - 52-N1200S",
+        "current_price": 5589.0,
+        "old_price": 7332.0,
+        "discount_percent": 23.8,
+        "url": "https://btech.com/ar/p/70d18d14-9a1c-422c-a907-a65d666e6891",
+        "image_url": null
+      },
+      {
+        "title": "طقم عناية بالشعر واللحية براون ، استخدام جاف ورطب ، اسود - MGK5420",
+        "current_price": 4989.0,
+        "old_price": 6322.0,
+        "discount_percent": 21.1,
+        "url": "https://btech.com/ar/p/braun-9-in-1-styling-kit-wet-dry-black-mgk5420",
+        "image_url": null
+      }
+    ]
+  },
+  {
+    "store": "raya",
+    "status": "OK",
+    "seconds": 1.11,
+    "fetched": 10,
+    "real_5_plus": 10,
+    "with_old_price": 10,
+    "with_image": 0,
+    "samples": [
+      {
+        "title": "سامسونج جالكسي A17 بشريحتين اتصال، 256 جيجابايت، 8 جيجا رام، شبكة الجيل الرابع - اسود",
+        "current_price": 18355.0,
+        "old_price": 24412.0,
+        "discount_percent": 24.8,
+        "url": "https://www.rayashop.com/ar/samsung-galaxy-a17-dual-sim-256gb-8gb-ram-4g-lte-black-259654",
+        "image_url": null
+      },
+      {
+        "title": "سامسونج جالكسي A17 بشريحتين اتصال، 256 جيجابايت، 8 جيجا رام، شبكة الجيل الرابع - رمادي",
+        "current_price": 18355.0,
+        "old_price": 24412.0,
+        "discount_percent": 24.8,
+        "url": "https://www.rayashop.com/ar/samsung-galaxy-a17-dual-sim-256gb-8gb-ram-4g-lte-grey-8806097657576-dr-mobile-samsung-a17-256gb-8gb-4g-grey-vooc-a17-8g-gray",
+        "image_url": null
+      },
+      {
+        "title": "سامسونج جالكسي A17 بشريحتين اتصال، 128 جيجابايت، 6 جيجا رام، شبكة الجيل الرابع - ازرق فاتح",
+        "current_price": 12730.0,
+        "old_price": 16931.0,
+        "discount_percent": 24.8,
+        "url": "https://www.rayashop.com/ar/samsung-galaxy-a17-dual-sim-128gb-6gb-ram-4g-lte-light-blue-259833",
+        "image_url": null
+      }
+    ]
+  },
+  {
+    "store": "dream2000",
+    "status": "OK",
+    "seconds": 15.6,
+    "fetched": 2584,
+    "real_5_plus": 2579,
+    "with_old_price": 2584,
+    "with_image": 0,
+    "samples": [
+      {
+        "title": "سخان مياه كهربائي Unionaire I Heat سعة 30 لتر 1500 وات، EWH30-C310-V-P-3 - أبيض",
+        "current_price": 2740.0,
+        "old_price": 3160.0,
+        "discount_percent": 13.3,
+        "url": "https://dream2000.com/products/unionaire-electric-water-heater-i-heat-30l-1500w-ewh30-c310-v-p-3-white?variant=49365433319563",
+        "image_url": null
+      },
+      {
+        "title": "تلفزيون Xiaomi 43 بوصة سمارت FHD Google TV مع ريسيفر مدمج، L43MB-AFME",
+        "current_price": 11499.0,
+        "old_price": 13225.0,
+        "discount_percent": 13.1,
+        "url": "https://dream2000.com/products/xiaomi-tv-43-inch-smart-fhd-google-tv-with-built-in-receiver-l43mb-afme?variant=49363225346187",
+        "image_url": null
+      },
+      {
+        "title": "ZOOVIA RS-001 حامل فيديو محمول بإضاءة LED للهواتف الذكية",
+        "current_price": 499.0,
+        "old_price": 599.0,
+        "discount_percent": 16.7,
+        "url": "https://dream2000.com/products/zoovia-rs-001-portable-led-video-rig-stand-for-smartphone?variant=49363224232075",
+        "image_url": null
+      }
+    ]
+  },
+  {
+    "store": "carrefour",
+    "status": "OK",
+    "seconds": 0.78,
+    "fetched": 0,
+    "real_5_plus": 0,
+    "with_old_price": 0,
+    "with_image": 0,
+    "samples": []
+  },
+  {
+    "store": "raneen",
+    "status": "ERROR",
+    "seconds": 0.0,
+    "error": "RuntimeError: raneen: browser/API connector required. Use an official/affiliate API where available, or Playwright on permitted public pages."
+  },
+  {
+    "store": "kenzz",
+    "status": "OK",
+    "seconds": 37.28,
+    "fetched": 207,
+    "real_5_plus": 207,
+    "with_old_price": 207,
+    "with_image": 207,
+    "samples": [
+      {
+        "title": "( 4 ) 5.0 مولفيكس حفاضات كبير - مقاس 4 - 58 حفاضة",
+        "current_price": 416.0,
+        "old_price": 487.0,
+        "discount_percent": 14.6,
+        "url": "https://kenzz.com/product/C3CMG76LZ96M/%D9%85%D9%88%D9%84%D9%81%D9%8A%D9%83%D8%B3-%D8%AD%D9%81%D8%A7%D8%B6%D8%A7%D8%AA-%D9%83%D8%A8%D9%8A%D8%B1-%D9%85%D9%82%D8%A7%D8%B3-4-58-%D8%AD%D9%81%D8%A7%D8%B6%D8%A9",
+        "image_url": "https://assets.kenzz.com/processed/116934/e-6224007557112-N_400.webp"
+      },
+      {
+        "title": "جل الاستحمام بينو إكسترا هايدريشن بابلينو للاطفال - 350 مل",
+        "current_price": 57.0,
+        "old_price": 206.0,
+        "discount_percent": 72.3,
+        "url": "https://kenzz.com/product/5P3787NJ2L42/%D8%AC%D9%84-%D8%A7%D9%84%D8%A7%D8%B3%D8%AA%D8%AD%D9%85%D8%A7%D9%85-%D8%A8%D9%8A%D9%86%D9%88-%D8%A5%D9%83%D8%B3%D8%AA%D8%B1%D8%A7-%D9%87%D8%A7%D9%8A%D8%AF%D8%B1%D9%8A%D8%B4%D9%86-%D8%A8%D8%A7%D8%A8%D9%84%D9%8A%D9%86%D9%88-%D9%84%D9%84%D8%A7%D8%B7%D9%81%D8%A7%D9%84-350-%D9%85%D9%84",
+        "image_url": "https://assets.kenzz.com/processed/437346/6224002949066_400.webp"
+      },
+      {
+        "title": "مناديل مبللة بالمسك للاطفال - 35+5 منديل - 3 قطع",
+        "current_price": 63.0,
+        "old_price": 143.0,
+        "discount_percent": 55.9,
+        "url": "https://kenzz.com/product/33FRZ9WD2G7M/%D9%85%D9%86%D8%A7%D8%AF%D9%8A%D9%84-%D9%85%D8%A8%D9%84%D9%84%D8%A9-%D8%A8%D8%A7%D9%84%D9%85%D8%B3%D9%83-%D9%84%D9%84%D8%A7%D8%B7%D9%81%D8%A7%D9%84-35%2B5-%D9%85%D9%86%D8%AF%D9%8A%D9%84-3-%D9%82%D8%B7%D8%B9",
+        "image_url": "https://assets.kenzz.com/processed/404050/hy-6224009939428_400.webp"
+      }
+    ]
+  }
+]

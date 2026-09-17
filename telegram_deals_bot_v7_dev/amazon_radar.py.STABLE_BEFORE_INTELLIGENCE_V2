@@ -1,0 +1,2920 @@
+import asyncio
+import hashlib
+import json
+import os
+import re
+import time
+from datetime import datetime
+from pathlib import Path
+from urllib.parse import quote_plus
+
+import httpx
+from bs4 import BeautifulSoup
+from rapidfuzz import fuzz
+from dotenv import load_dotenv
+
+from engine import run_store
+from db import connect
+from stores.base import parse_price
+
+load_dotenv(".env")
+
+ROOT = Path(__file__).resolve().parent
+WATCH_FILE = ROOT / ".amazon_radar_watch.json"
+STATE_FILE = ROOT / ".amazon_radar_state.json"
+
+RAW_BASE = os.environ["CLOUD_API_URL"].rstrip("/")
+if RAW_BASE.endswith("/api/deals"):
+    CLOUD_BASE = RAW_BASE[:-len("/api/deals")]
+else:
+    CLOUD_BASE = RAW_BASE
+
+API_KEY = os.environ["CLOUD_API_KEY"]
+
+AMAZON = "https://www.amazon.eg"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 14) "
+        "AppleWebKit/537.36 "
+        "Chrome/140.0 Mobile Safari/537.36"
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,"
+        "application/xml;q=0.9,*/*;q=0.8"
+    ),
+    "Accept-Language": "ar-EG,ar;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+}
+
+API_HEADERS = {
+    "x-api-key": API_KEY,
+    "Accept": "application/json",
+    "User-Agent": "EgyptDealsAmazonRadar/1.0",
+}
+
+# مصادر بحث مستقلة عن الـscanner العادي
+KEYWORDS = [
+    "iphone",
+    "samsung galaxy",
+    "xiaomi",
+    "redmi",
+    "oppo",
+    "realme",
+    "laptop",
+    "gaming laptop",
+    "ssd",
+    "nvme",
+    "headphones",
+    "earbuds",
+    "power bank",
+    "smart watch",
+    "playstation",
+    "air fryer",
+    "smart tv",
+    "monitor",
+]
+
+CATEGORIES = [
+    "electronics",
+    "computers",
+    "mobile-phones",
+    "videogames",
+    "appliances",
+]
+
+SOURCE_URLS = (
+    [
+        f"{AMAZON}/s?i={x}"
+        for x in CATEGORIES
+    ]
+    +
+    [
+        f"{AMAZON}/s?k={quote_plus(x)}"
+        for x in KEYWORDS
+    ]
+)
+
+HIGH_VALUE_WORDS = (
+    "iphone",
+    "galaxy",
+    "samsung",
+    "xiaomi",
+    "redmi",
+    "oppo",
+    "realme",
+    "laptop",
+    "ssd",
+    "nvme",
+    "playstation",
+    "television",
+    "smart tv",
+    "monitor",
+    "air fryer",
+    "ساعة",
+    "موبايل",
+    "هاتف",
+    "لاب توب",
+    "تلفزيون",
+    "شاشة",
+)
+
+lock = asyncio.Lock()
+
+
+def load_json(path, default):
+    try:
+        return json.loads(
+            path.read_text(encoding="utf-8")
+        )
+    except Exception:
+        return default
+
+
+watch = load_json(WATCH_FILE, {})
+state = load_json(
+    STATE_FILE,
+    {
+        "source_index": 0,
+        "hot_index": 0,
+    }
+)
+
+
+def save_files():
+    WATCH_FILE.write_text(
+        json.dumps(
+            watch,
+            ensure_ascii=False,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+    STATE_FILE.write_text(
+        json.dumps(
+            state,
+            ensure_ascii=False,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
+
+
+def to_float(v):
+    try:
+        return float(v)
+    except Exception:
+        return 0.0
+
+
+def asin_url(asin):
+    return f"{AMAZON}/dp/{asin}"
+
+
+def parse_search(html):
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
+
+    found = []
+
+    for card in soup.select(
+        "div.s-result-item[data-asin]"
+    ):
+        asin = (
+            card.get("data-asin")
+            or ""
+        ).strip()
+
+        if not asin:
+            continue
+
+        title_el = card.select_one(
+            "h2 span"
+        )
+
+        price_el = card.select_one(
+            ".a-price .a-offscreen"
+        )
+
+        if not title_el or not price_el:
+            continue
+
+        current = parse_price(
+            price_el.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if not current or current <= 0:
+            continue
+
+        old = None
+
+        old_el = card.select_one(
+            ".a-price.a-text-price .a-offscreen"
+        )
+
+        if old_el:
+            old = parse_price(
+                old_el.get_text(
+                    " ",
+                    strip=True
+                )
+            )
+
+        if old is not None and old <= current:
+            old = None
+
+        found.append({
+            "asin": asin,
+            "title": title_el.get_text(
+                " ",
+                strip=True
+            ),
+            "url": asin_url(asin),
+            "current_price": float(current),
+            "old_price": (
+                float(old)
+                if old
+                else None
+            ),
+        })
+
+    return found
+
+
+def add_product(item, source):
+    asin = item.get("asin")
+
+    if not asin:
+        url = item.get("url", "")
+        parts = url.split("/dp/")
+
+        if len(parts) > 1:
+            asin = (
+                parts[1]
+                .split("/")[0]
+                .split("?")[0]
+            )
+
+    if not asin:
+        return
+
+    current = to_float(
+        item.get("current_price")
+    )
+
+    if current <= 0:
+        return
+
+    old = to_float(
+        item.get("old_price")
+    )
+
+    now = int(time.time())
+
+    rec = watch.get(
+        asin,
+        {
+            "asin": asin,
+            "title": item.get(
+                "title",
+                ""
+            ),
+            "url": asin_url(asin),
+            "first_seen": now,
+            "last_seen": now,
+            "last_price": current,
+            "max_seen_price": current,
+            "min_seen_price": current,
+            "sources": [],
+        }
+    )
+
+    rec["title"] = (
+        item.get("title")
+        or rec.get("title")
+        or ""
+    )
+
+    rec["url"] = asin_url(asin)
+    rec["last_seen"] = now
+    rec["last_price"] = current
+
+    rec["max_seen_price"] = max(
+        to_float(
+            rec.get("max_seen_price")
+        ),
+        current,
+        old,
+    )
+
+    previous_min = to_float(
+        rec.get("min_seen_price")
+    )
+
+    if previous_min <= 0:
+        previous_min = current
+
+    rec["min_seen_price"] = min(
+        previous_min,
+        current
+    )
+
+    sources = set(
+        rec.get("sources", [])
+    )
+
+    sources.add(source)
+
+    rec["sources"] = sorted(sources)
+
+    watch[asin] = rec
+
+
+
+
+# =========================================================
+# AMAZON SMART NETWORK GOVERNOR
+# =========================================================
+
+AMAZON_FETCH_CACHE = {}
+AMAZON_FAIL_UNTIL = {}
+AMAZON_INFLIGHT = {}
+
+AMAZON_GATE = asyncio.Lock()
+
+AMAZON_LAST_REQUEST_AT = 0.0
+AMAZON_503_EVENTS = []
+
+AMAZON_CIRCUIT_UNTIL = 0.0
+AMAZON_RECOVERY_UNTIL = 0.0
+
+AMAZON_CIRCUIT_SECONDS = 150
+AMAZON_RECOVERY_SECONDS = 75
+
+# Normal traffic:
+# one Amazon request approximately every 1.15 sec.
+AMAZON_NORMAL_GAP = 1.15
+
+# After a block has just recovered:
+# intentionally slower for a short period.
+AMAZON_RECOVERY_GAP = 2.25
+
+# Smart progressive recovery
+AMAZON_SUCCESS_STREAK = 0
+AMAZON_LAST_503_AT = 0.0
+
+# Amazon Search has a much stricter limit than product pages.
+# Keep its health completely separate from Ultra/Hot.
+AMAZON_SEARCH_503_STREAK = 0
+AMAZON_SEARCH_BACKOFF_UNTIL = 0.0
+
+
+
+
+def amazon_priority_url(url):
+    """
+    Priority traffic means:
+      - exact product URL
+      - exact ASIN search
+
+    Ultra/Hot price checks use these URLs.
+    Discovery/model searches are secondary.
+    """
+    u = str(url or "")
+
+    if "amazon.eg" not in u:
+        return True
+
+    if "/dp/" in u:
+        return True
+
+    if "/s?k=" in u:
+        q = (
+            u.split("/s?k=", 1)[1]
+            .split("&", 1)[0]
+            .strip()
+            .upper()
+        )
+
+        if re.fullmatch(r"[A-Z0-9]{10}", q):
+            return True
+
+    return False
+
+
+def amazon_circuit_open():
+    return time.monotonic() < AMAZON_CIRCUIT_UNTIL
+
+
+def amazon_recovering():
+    now = time.monotonic()
+
+    return (
+        not amazon_circuit_open()
+        and now < AMAZON_RECOVERY_UNTIL
+    )
+
+
+
+def amazon_secondary_allowed():
+    # Ultra gets absolute priority during startup/recovery.
+    # Discovery/competitors resume after clean successes.
+    return (
+        not amazon_circuit_open()
+        and AMAZON_SUCCESS_STREAK >= 8
+        and not amazon_recovering()
+    )
+
+
+
+def amazon_search_backoff_active():
+    return (
+        time.monotonic()
+        < AMAZON_SEARCH_BACKOFF_UNTIL
+    )
+
+
+def note_amazon_search_503(url):
+    global AMAZON_SEARCH_503_STREAK
+    global AMAZON_SEARCH_BACKOFF_UNTIL
+
+    AMAZON_SEARCH_503_STREAK += 1
+
+    # Independent exponential backoff for Search only.
+    delays = (90, 300, 600, 900)
+
+    delay = delays[
+        min(
+            AMAZON_SEARCH_503_STREAK - 1,
+            len(delays) - 1
+        )
+    ]
+
+    now = time.monotonic()
+
+    AMAZON_SEARCH_BACKOFF_UNTIL = max(
+        AMAZON_SEARCH_BACKOFF_UNTIL,
+        now + delay
+    )
+
+    # Quarantine this exact query for 10 minutes.
+    AMAZON_FAIL_UNTIL[str(url)] = max(
+        AMAZON_FAIL_UNTIL.get(
+            str(url),
+            0
+        ),
+        now + 600
+    )
+
+    print(
+        "🔎 AMAZON SEARCH BACKOFF",
+        "| STREAK =",
+        AMAZON_SEARCH_503_STREAK,
+        "| PAUSE =",
+        delay,
+        "sec",
+        flush=True
+    )
+
+
+def note_amazon_search_200():
+    global AMAZON_SEARCH_503_STREAK
+    global AMAZON_SEARCH_BACKOFF_UNTIL
+
+    if AMAZON_SEARCH_503_STREAK:
+        print(
+            "✅ AMAZON SEARCH HEALTHY AGAIN",
+            flush=True
+        )
+
+    AMAZON_SEARCH_503_STREAK = 0
+    AMAZON_SEARCH_BACKOFF_UNTIL = 0.0
+
+
+def note_amazon_503():
+    global AMAZON_503_EVENTS
+    global AMAZON_CIRCUIT_UNTIL
+    global AMAZON_RECOVERY_UNTIL
+    global AMAZON_SUCCESS_STREAK
+    global AMAZON_LAST_503_AT
+
+    now = time.monotonic()
+
+    AMAZON_SUCCESS_STREAK = 0
+    AMAZON_LAST_503_AT = now
+
+    AMAZON_503_EVENTS = [
+        t
+        for t in AMAZON_503_EVENTS
+        if now - t <= 25
+    ]
+
+    AMAZON_503_EVENTS.append(now)
+
+    count = len(AMAZON_503_EVENTS)
+
+    if count >= 3:
+        AMAZON_CIRCUIT_UNTIL = max(
+            AMAZON_CIRCUIT_UNTIL,
+            now + AMAZON_CIRCUIT_SECONDS
+        )
+
+        AMAZON_RECOVERY_UNTIL = (
+            AMAZON_CIRCUIT_UNTIL
+            + AMAZON_RECOVERY_SECONDS
+        )
+
+        print(
+            "⛔ AMAZON CIRCUIT OPEN",
+            "| 503/25s =",
+            count,
+            "| PAUSE =",
+            AMAZON_CIRCUIT_SECONDS,
+            "sec",
+            flush=True
+        )
+
+    else:
+        print(
+            "🛡️ AMAZON 503 WARNING",
+            "| COUNT =",
+            count,
+            flush=True
+        )
+
+
+def note_amazon_200():
+    global AMAZON_503_EVENTS
+    global AMAZON_SUCCESS_STREAK
+    global AMAZON_RECOVERY_UNTIL
+
+    now = time.monotonic()
+
+    AMAZON_503_EVENTS = [
+        t
+        for t in AMAZON_503_EVENTS
+        if now - t <= 25
+    ]
+
+    AMAZON_SUCCESS_STREAK += 1
+
+    if AMAZON_SUCCESS_STREAK in (1, 3, 8, 12):
+        print(
+            "🚦 AMAZON HEALTH",
+            "| SUCCESS STREAK =",
+            AMAZON_SUCCESS_STREAK,
+            flush=True
+        )
+
+    # 12 clean requests = return to full speed early
+    if AMAZON_SUCCESS_STREAK >= 12:
+        if AMAZON_RECOVERY_UNTIL > now:
+            print(
+                "✅ AMAZON RECOVERED -> FULL SPEED",
+                flush=True
+            )
+
+        AMAZON_RECOVERY_UNTIL = 0.0
+
+
+def invalidate_amazon_cache(asin):
+    asin = str(asin or "").upper()
+
+    if not asin:
+        return
+
+    for mapping in (
+        AMAZON_FETCH_CACHE,
+        AMAZON_FAIL_UNTIL,
+    ):
+        for key in list(mapping.keys()):
+            if asin in str(key).upper():
+                mapping.pop(key, None)
+
+
+
+async def amazon_wait_for_slot():
+    global AMAZON_LAST_REQUEST_AT
+
+    now = time.monotonic()
+
+    # First clean requests after startup/block:
+    # 0-2 successes  -> 2.8 sec
+    # 3-7 successes  -> 1.8 sec
+    # 8+ successes   -> 1.15 sec
+    #
+    # This quickly reaches maximum speed without a burst.
+    if AMAZON_SUCCESS_STREAK < 3:
+        gap = 2.80
+    elif AMAZON_SUCCESS_STREAK < 8:
+        gap = 1.80
+    else:
+        gap = AMAZON_NORMAL_GAP
+
+    wait = (
+        AMAZON_LAST_REQUEST_AT
+        + gap
+        - now
+    )
+
+    if wait > 0:
+        await asyncio.sleep(wait)
+
+    AMAZON_LAST_REQUEST_AT = time.monotonic()
+
+
+async def _raw_fetch(client, url):
+    is_amazon = (
+        "amazon.eg"
+        in str(url)
+    )
+
+    if not is_amazon:
+        try:
+            r = await client.get(
+                url,
+                headers=HEADERS,
+                timeout=25,
+                follow_redirects=True
+            )
+
+            if r.status_code == 200:
+                return r.text
+
+            print(
+                "SOURCE HTTP",
+                r.status_code,
+                url[:80],
+                flush=True
+            )
+
+        except Exception as e:
+            print(
+                "SOURCE ERROR",
+                repr(e),
+                flush=True
+            )
+
+        return ""
+
+    # Absolutely no Amazon request while circuit is open.
+    if amazon_circuit_open():
+        return ""
+
+    async with AMAZON_GATE:
+
+        # Circuit may have opened while waiting.
+        if amazon_circuit_open():
+            return ""
+
+        await amazon_wait_for_slot()
+
+        try:
+            r = await client.get(
+                url,
+                headers=HEADERS,
+                timeout=25,
+                follow_redirects=True
+            )
+
+            if r.status_code == 200:
+                if amazon_priority_url(url):
+                    note_amazon_200()
+                else:
+                    note_amazon_search_200()
+
+                return r.text
+
+            if r.status_code == 503:
+                if amazon_priority_url(url):
+                    # Product/ASIN monitoring problem:
+                    # this can affect the global circuit.
+                    note_amazon_503()
+                else:
+                    # Discovery/model-search problem only.
+                    # NEVER slow Ultra because of this.
+                    note_amazon_search_503(url)
+
+            print(
+                "SOURCE HTTP",
+                r.status_code,
+                url[:80],
+                flush=True
+            )
+
+        except Exception as e:
+            print(
+                "SOURCE ERROR",
+                repr(e),
+                flush=True
+            )
+
+    return ""
+
+
+async def fetch_html(client, url):
+    url = str(url)
+    now = time.monotonic()
+
+    is_amazon = (
+        "amazon.eg"
+        in url
+    )
+
+    if not is_amazon:
+        return await _raw_fetch(
+            client,
+            url
+        )
+
+    priority = amazon_priority_url(
+        url
+    )
+
+    # No requests during hard circuit.
+    if amazon_circuit_open():
+        return ""
+
+    # During recovery Ultra/ASIN checks only.
+    if (
+        not amazon_secondary_allowed()
+        and not priority
+    ):
+        return ""
+
+
+    fail_until = AMAZON_FAIL_UNTIL.get(
+        url,
+        0
+    )
+
+    if now < fail_until:
+        return ""
+
+    cached = AMAZON_FETCH_CACHE.get(
+        url
+    )
+
+    if cached:
+        cached_at, html = cached
+
+        if now - cached_at <= 7:
+            return html
+
+    existing = AMAZON_INFLIGHT.get(
+        url
+    )
+
+    if existing is not None:
+        try:
+            return await existing
+        except Exception:
+            return ""
+
+    async def work():
+        html = await _raw_fetch(
+            client,
+            url
+        )
+
+        if html:
+            AMAZON_FETCH_CACHE[url] = (
+                time.monotonic(),
+                html
+            )
+
+            if len(AMAZON_FETCH_CACHE) > 1200:
+                oldest = sorted(
+                    AMAZON_FETCH_CACHE.items(),
+                    key=lambda x: x[1][0]
+                )[:250]
+
+                for key, _ in oldest:
+                    AMAZON_FETCH_CACHE.pop(
+                        key,
+                        None
+                    )
+
+        else:
+            AMAZON_FAIL_UNTIL[url] = max(
+                AMAZON_FAIL_UNTIL.get(
+                    url,
+                    0
+                ),
+                time.monotonic() + 15
+            )
+
+        return html
+
+    task = asyncio.create_task(
+        work()
+    )
+
+    AMAZON_INFLIGHT[url] = task
+
+    try:
+        return await task
+    finally:
+        if AMAZON_INFLIGHT.get(url) is task:
+            AMAZON_INFLIGHT.pop(
+                url,
+                None
+            )
+
+
+
+
+async def live_price(client, url):
+    """
+    DIRECT PRODUCT PAGE ONLY.
+
+    Important:
+    Continuous monitoring NEVER uses Amazon Search.
+    This avoids /s?k=ASIN rate limits and keeps latency low.
+    """
+
+    html = await fetch_html(
+        client,
+        url
+    )
+
+    if not html:
+        return None
+
+    soup = BeautifulSoup(
+        html,
+        "html.parser"
+    )
+
+    selectors = [
+        ".priceToPay .a-offscreen",
+        ".apexPriceToPay .a-offscreen",
+        "#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen",
+        "#corePriceDisplay_desktop_feature_div .a-price .a-offscreen",
+        "#corePrice_feature_div .a-price .a-offscreen",
+        "#apex_desktop .a-price .a-offscreen",
+        "#desktop_unifiedPrice .a-price .a-offscreen",
+        "#tp_price_block_total_price_ww .a-offscreen",
+        "#newAccordionRow_1 .a-price .a-offscreen",
+        "#price .a-price .a-offscreen",
+        "#price_inside_buybox",
+        "#newBuyBoxPrice",
+        "#priceblock_dealprice",
+        "#priceblock_ourprice",
+        "span.a-price[data-a-size='xl'] .a-offscreen",
+        "span.a-price[data-a-size='l'] .a-offscreen",
+    ]
+
+    for selector in selectors:
+        el = soup.select_one(selector)
+
+        if not el:
+            continue
+
+        price = parse_price(
+            el.get_text(
+                " ",
+                strip=True
+            )
+        )
+
+        if price and price > 0:
+            return float(price)
+
+    # JSON-LD fallback from the SAME product page.
+    # No second Amazon request.
+    for script in soup.select(
+        'script[type="application/ld+json"]'
+    ):
+        text = script.string or script.get_text()
+
+        if not text:
+            continue
+
+        try:
+            data = json.loads(text)
+        except Exception:
+            continue
+
+        objects = (
+            data
+            if isinstance(data, list)
+            else [data]
+        )
+
+        for obj in objects:
+            if not isinstance(obj, dict):
+                continue
+
+            offers = obj.get("offers")
+
+            if isinstance(offers, dict):
+                price = to_float(
+                    offers.get("price")
+                )
+
+                if price > 0:
+                    return float(price)
+
+            elif isinstance(offers, list):
+                for offer in offers:
+                    if not isinstance(offer, dict):
+                        continue
+
+                    price = to_float(
+                        offer.get("price")
+                    )
+
+                    if price > 0:
+                        return float(price)
+
+    # Embedded Amazon data fallback.
+    # Still from the SAME downloaded page.
+    patterns = [
+        r'"priceAmount"\s*:\s*([0-9]+(?:\.[0-9]+)?)',
+        r'"price"\s*:\s*"([0-9]+(?:\.[0-9]+)?)"',
+    ]
+
+    for pattern in patterns:
+        m = re.search(
+            pattern,
+            html
+        )
+
+        if not m:
+            continue
+
+        price = to_float(
+            m.group(1)
+        )
+
+        if price > 0:
+            return float(price)
+
+    return None
+
+
+async def cloud_observations(items):
+    if not items:
+        return
+
+    payload = []
+
+    for item in items:
+        payload.append({
+            "product_key":
+                "amazon-asin:"
+                + item["asin"],
+
+            "store": "amazon",
+            "title": item["title"],
+            "current_price":
+                item["current_price"],
+
+            "old_price":
+                item.get("old_price"),
+
+            "url": item["url"],
+        })
+
+    async with httpx.AsyncClient() as client:
+        for i in range(
+            0,
+            len(payload),
+            50
+        ):
+            chunk = payload[i:i + 50]
+
+            try:
+                await client.post(
+                    CLOUD_BASE
+                    + "/api/observations",
+                    json={
+                        "observations": chunk
+                    },
+                    headers=API_HEADERS,
+                    timeout=30
+                )
+            except Exception:
+                pass
+
+
+def is_hot(rec):
+    title = (
+        rec.get("title")
+        or ""
+    ).lower()
+
+    high_word = any(
+        w in title
+        for w in HIGH_VALUE_WORDS
+    )
+
+    return (
+        high_word
+        or to_float(
+            rec.get("max_seen_price")
+        ) >= 800
+    )
+
+
+async def send_alert(
+    client,
+    rec,
+    live,
+    reference,
+    drop,
+    saving
+):
+    now_ts = int(time.time())
+
+    last_alert_price = to_float(
+        rec.get("last_alert_price")
+    )
+    last_alert_at = int(
+        rec.get("last_alert_at", 0)
+        or 0
+    )
+
+    # Same price already alerted recently.
+    # A genuinely new lower price bypasses the cooldown.
+    same_price = (
+        last_alert_price > 0
+        and abs(live - last_alert_price)
+            <= max(1.0, last_alert_price * 0.005)
+    )
+
+    if same_price and now_ts - last_alert_at < 1800:
+        return False
+
+    reason = (
+        "🚨 هبوط سعر Amazon مؤكد\n"
+        f"ASIN: {rec['asin']}\n"
+        f"السعر الحالي: {live:,.2f} جنيه\n"
+        f"أعلى سعر رصدناه سابقًا: "
+        f"{reference:,.2f} جنيه\n"
+        f"التوفير: {saving:,.2f} جنيه\n"
+        f"الهبوط المحسوب: {drop:.1f}%\n"
+        "✅ تم فتح نفس صفحة المنتج "
+        "مرتين والتحقق من السعر قبل الإرسال."
+    )
+
+    fp_raw = (
+        rec["asin"]
+        + "|"
+        + str(round(live, 2))
+    )
+
+    fp = (
+        "amazon-radar-"
+        + hashlib.sha256(
+            fp_raw.encode()
+        ).hexdigest()[:32]
+    )
+
+    payload = {
+        "fingerprint": fp,
+        "store": "Amazon Egypt",
+        "title": rec["title"],
+        "url": rec["url"],
+        "current_price": live,
+        "old_price": None,
+        "discount_percent":
+            round(drop, 1),
+
+        "saving":
+            round(saving, 2),
+
+        "verified": True,
+        "verification_reason": reason,
+        "comparison_report": reason,
+        "reason": reason,
+        "priority": "critical",
+        "live_rechecked": True,
+        "asin": rec["asin"],
+    }
+
+    r = await client.post(
+        CLOUD_BASE + "/api/deals",
+        json=payload,
+        headers=API_HEADERS,
+        timeout=30
+    )
+
+    if r.status_code == 200:
+        rec["last_alert_price"] = live
+        rec["last_alert_at"] = now_ts
+
+        if rec["asin"] in watch:
+            watch[rec["asin"]]["last_alert_price"] = live
+            watch[rec["asin"]]["last_alert_at"] = now_ts
+
+        async with lock:
+            save_files()
+
+    print(
+        "🚨 AMAZON ALERT",
+        rec["asin"],
+        "|",
+        round(reference, 2),
+        "->",
+        round(live, 2),
+        "|",
+        round(drop, 1),
+        "%",
+        "| API",
+        r.status_code,
+        flush=True
+    )
+
+
+
+# =========================================================
+# UNIFIED AMAZON DISCOVERY QUEUE
+# =========================================================
+
+UNIFIED_AMAZON_QUEUE = []
+UNIFIED_QUEUE_SEEN = {}
+
+UNIFIED_QUEUE_LIMIT = 60
+UNIFIED_QUEUE_DEDUPE = 3600
+
+# One new Amazon discovery/search request at a time.
+# Ultra/Hot product-page monitoring keeps priority.
+UNIFIED_QUEUE_GAP = 12
+
+
+EXTRA_AMAZON_SEARCH_TERMS = [
+    "electronics",
+    "mobile phones",
+    "smartphones",
+    "computers laptops",
+    "computer accessories",
+    "televisions",
+    "audio headphones",
+    "cameras",
+    "gaming",
+    "video games",
+    "home appliances",
+    "small appliances",
+    "air conditioners",
+    "kitchen appliances",
+    "home kitchen",
+    "furniture",
+    "men fashion",
+    "women fashion",
+    "shoes",
+    "watches",
+    "beauty",
+    "personal care",
+    "health",
+    "baby",
+    "toys",
+    "sports fitness",
+    "automotive",
+    "tools home improvement",
+    "grocery",
+    "pet supplies",
+    "books",
+    "office stationery",
+    "garden outdoor",
+    "smart home",
+]
+
+
+for term in EXTRA_AMAZON_SEARCH_TERMS:
+    u = (
+        AMAZON
+        + "/s?k="
+        + quote_plus(term)
+    )
+
+    if u not in SOURCE_URLS:
+        SOURCE_URLS.append(u)
+
+
+def strong_model_tokens(title):
+    tokens = model_tokens(title)
+
+    good = []
+
+    generic_patterns = [
+        r"^\d+(GB|TB|MB)$",
+        r"^\d+(MAH|W|HZ)$",
+        r"^\d+G$",
+        r"^[245]G$",
+        r"^\d+[./]\d+(GB|TB)?$",
+        r"^\d+INCH$",
+    ]
+
+    for token in tokens:
+        t = token.upper().strip()
+
+        if any(
+            re.fullmatch(pattern, t)
+            for pattern in generic_patterns
+        ):
+            continue
+
+        good.append(t)
+
+    return good[:3]
+
+
+
+def build_trigger_query(title):
+    """
+    Build the smallest possible Amazon search query.
+
+    Prefer exact model numbers only.
+    Avoid Arabic brand words and generic specs because
+    long search queries were causing unnecessary 503s.
+    """
+
+    title = " ".join(
+        str(title or "").split()
+    )
+
+    if not title:
+        return ""
+
+    tokens = strong_model_tokens(
+        title
+    )
+
+    if tokens:
+        # Prefer the strongest/longest model-looking token.
+        tokens = sorted(
+            set(tokens),
+            key=lambda x: (
+                len(x),
+                sum(c.isdigit() for c in x)
+            ),
+            reverse=True
+        )
+
+        primary = tokens[0]
+
+        # Use a second token only if it is clearly useful.
+        if len(tokens) > 1:
+            second = tokens[1]
+
+            if (
+                len(second) >= 6
+                and second not in primary
+                and primary not in second
+            ):
+                return primary + " " + second
+
+        return primary
+
+    # Product families without classic model IDs.
+    low = title.lower()
+
+    families = (
+        "iphone",
+        "ipad",
+        "macbook",
+        "playstation",
+        "xbox",
+    )
+
+    for family in families:
+        if family in low:
+            words = title.split()
+            return " ".join(words[:5])
+
+    return ""
+
+
+
+def enqueue_amazon_candidate(
+    source,
+    title="",
+    query="",
+    url="",
+    priority=50,
+    boost_seconds=900,
+    kind="trigger",
+):
+    """
+    Latest/priority aware queue.
+
+    The SAME model coming from 2B, Jumia, Kenzz, BTECH etc.
+    becomes one queue item instead of many Amazon searches.
+    """
+
+    now = time.time()
+
+    if not query and not url:
+        return False
+
+    # -------------------------------------------------
+    # Canonical identity
+    # -------------------------------------------------
+
+    if kind == "discovery" and url:
+        canonical = (
+            "DISCOVERY|"
+            + str(url).lower().strip()
+        )
+
+    else:
+        model_source = (
+            str(query or "")
+            + " "
+            + str(title or "")
+        )
+
+        models = strong_model_tokens(
+            model_source
+        )
+
+        if models:
+            # The strongest model is enough for dedupe.
+            model = sorted(
+                set(models),
+                key=lambda x: (
+                    len(x),
+                    sum(
+                        c.isdigit()
+                        for c in x
+                    )
+                ),
+                reverse=True
+            )[0]
+
+            canonical = (
+                "MODEL|"
+                + model.upper()
+            )
+
+        else:
+            normalized = re.sub(
+                r"\s+",
+                " ",
+                str(query).strip().lower()
+            )
+
+            canonical = (
+                "QUERY|"
+                + normalized
+            )
+
+    # -------------------------------------------------
+    # Remove stale queue work
+    # -------------------------------------------------
+
+    fresh = []
+
+    for old in UNIFIED_AMAZON_QUEUE:
+        age = (
+            now
+            - old.get(
+                "queued_at",
+                now
+            )
+        )
+
+        ttl = (
+            3600
+            if old.get("priority", 0) >= 85
+            else 1200
+        )
+
+        if age <= ttl:
+            fresh.append(old)
+
+    UNIFIED_AMAZON_QUEUE[:] = fresh
+
+    # -------------------------------------------------
+    # Merge duplicate model/query across ALL sources
+    # -------------------------------------------------
+
+    for old in UNIFIED_AMAZON_QUEUE:
+
+        if old.get("key") != canonical:
+            continue
+
+        old_priority = old.get(
+            "priority",
+            0
+        )
+
+        if priority > old_priority:
+            old["priority"] = int(
+                priority
+            )
+
+            old["source"] = source
+
+            if title:
+                old["title"] = title
+
+            if query:
+                old["query"] = query
+
+        old["boost_seconds"] = max(
+            int(
+                old.get(
+                    "boost_seconds",
+                    0
+                )
+            ),
+            int(boost_seconds)
+        )
+
+        sources = set(
+            old.get(
+                "sources",
+                []
+            )
+        )
+
+        sources.add(
+            str(source)
+        )
+
+        old["sources"] = sorted(
+            sources
+        )
+
+        return False
+
+    # -------------------------------------------------
+    # New queue item
+    # -------------------------------------------------
+
+    item = {
+        "key": canonical,
+        "source": source,
+        "sources": [str(source)],
+        "title": title,
+        "query": query,
+        "url": url,
+        "priority": int(priority),
+        "boost_seconds": int(
+            boost_seconds
+        ),
+        "kind": kind,
+        "queued_at": now,
+        "ready_at": now,
+        "attempts": 0,
+    }
+
+    UNIFIED_AMAZON_QUEUE.append(
+        item
+    )
+
+    # Highest priority first.
+    # Within same priority, oldest first.
+    UNIFIED_AMAZON_QUEUE.sort(
+        key=lambda x: (
+            -x.get(
+                "priority",
+                0
+            ),
+            x.get(
+                "queued_at",
+                now
+            ),
+        )
+    )
+
+    # If crowded:
+    # preserve important triggers and throw away
+    # lowest priority discovery work first.
+    if len(UNIFIED_AMAZON_QUEUE) > UNIFIED_QUEUE_LIMIT:
+
+        UNIFIED_AMAZON_QUEUE[:] = (
+            UNIFIED_AMAZON_QUEUE[
+                :UNIFIED_QUEUE_LIMIT
+            ]
+        )
+
+    UNIFIED_QUEUE_SEEN[
+        canonical
+    ] = now
+
+    return True
+
+
+
+def pop_amazon_candidate():
+    now = time.time()
+
+    # Remove stale entries.
+    keep = []
+
+    for item in UNIFIED_AMAZON_QUEUE:
+
+        age = (
+            now
+            - item.get(
+                "queued_at",
+                now
+            )
+        )
+
+        ttl = (
+            3600
+            if item.get(
+                "priority",
+                0
+            ) >= 85
+            else 1200
+        )
+
+        if age <= ttl:
+            keep.append(item)
+
+    UNIFIED_AMAZON_QUEUE[:] = keep
+
+    # Keep priority ordering fresh.
+    UNIFIED_AMAZON_QUEUE.sort(
+        key=lambda x: (
+            -x.get(
+                "priority",
+                0
+            ),
+            x.get(
+                "queued_at",
+                now
+            ),
+        )
+    )
+
+    for i, item in enumerate(
+        UNIFIED_AMAZON_QUEUE
+    ):
+        if item.get(
+            "ready_at",
+            0
+        ) <= now:
+            return UNIFIED_AMAZON_QUEUE.pop(
+                i
+            )
+
+    return None
+
+
+async def process_queue_item(client, job):
+    if job["url"]:
+        amazon_url = job["url"]
+    else:
+        amazon_url = (
+            AMAZON
+            + "/s?k="
+            + quote_plus(job["query"])
+        )
+
+    html = await fetch_html(
+        client,
+        amazon_url
+    )
+
+    if not html:
+        return False
+
+    items = parse_search(html)
+
+    if not items:
+        return True
+
+    # Broad Amazon discovery page.
+    if job["kind"] == "discovery":
+        added = 0
+
+        for item in items[:24]:
+            before = len(watch)
+
+            add_product(
+                item,
+                "queue:"
+                + job["source"]
+            )
+
+            if len(watch) > before:
+                added += 1
+
+        async with lock:
+            save_files()
+
+        print(
+            "🔎 QUEUE DISCOVERY",
+            job["source"],
+            "| FOUND =",
+            len(items),
+            "| NEW =",
+            added,
+            "| QUEUE =",
+            len(UNIFIED_AMAZON_QUEUE),
+            flush=True
+        )
+
+        return True
+
+    original_title = (
+        job["title"]
+        or job["query"]
+    )
+
+    original_tokens = strong_model_tokens(
+        original_title
+    )
+
+    best = None
+    best_score = 0
+
+    for item in items[:12]:
+        amazon_title = (
+            item.get("title")
+            or ""
+        )
+
+        score = fuzz.token_set_ratio(
+            original_title.lower(),
+            amazon_title.lower()
+        )
+
+        token_match = (
+            bool(original_tokens)
+            and any(
+                token.upper()
+                in amazon_title.upper()
+                for token in original_tokens
+            )
+        )
+
+        if token_match:
+            score += 20
+
+        if (
+            original_tokens
+            and not token_match
+            and score < 82
+        ):
+            continue
+
+        if score > best_score:
+            best_score = score
+            best = item
+
+    if best is None:
+        return True
+
+    if best_score < 58:
+        return True
+
+    asin = best["asin"]
+    existed = asin in watch
+
+    add_product(
+        best,
+        "queue:" + job["source"]
+    )
+
+    if asin in watch:
+        watch[asin][
+            "priority_boost_until"
+        ] = int(time.time()) + job[
+            "boost_seconds"
+        ]
+
+        watch[asin][
+            "trigger_source"
+        ] = job["source"]
+
+        watch[asin][
+            "trigger_title"
+        ] = original_title
+
+        watch[asin][
+            "trigger_match_score"
+        ] = round(best_score, 1)
+
+    async with lock:
+        save_files()
+
+    print(
+        "🎯 QUEUE -> AMAZON",
+        job["source"],
+        "| ASIN:",
+        asin,
+        "| SCORE:",
+        round(best_score, 1),
+        "|",
+        "KNOWN" if existed else "NEW",
+        flush=True
+    )
+
+    return True
+
+
+async def unified_queue_loop():
+    await asyncio.sleep(20)
+
+    async with httpx.AsyncClient() as client:
+
+        while True:
+            # Product-page Ultra/Hot may remain healthy while
+            # Amazon Search itself is throttled.
+            if amazon_search_backoff_active():
+                await asyncio.sleep(5)
+                continue
+
+            if not amazon_secondary_allowed():
+                await asyncio.sleep(5)
+                continue
+
+            job = pop_amazon_candidate()
+
+            if not job:
+                await asyncio.sleep(3)
+                continue
+
+            try:
+                ok = await process_queue_item(
+                    client,
+                    job
+                )
+
+                if not ok:
+                    job["attempts"] += 1
+
+                    if (
+                        job["attempts"] <= 2
+                        and not amazon_circuit_open()
+                    ):
+                        job["ready_at"] = (
+                            time.time() + 60
+                        )
+
+                        UNIFIED_AMAZON_QUEUE.append(
+                            job
+                        )
+
+                        UNIFIED_AMAZON_QUEUE.sort(
+                            key=lambda x: (
+                                -x["priority"],
+                                x["ready_at"],
+                            )
+                        )
+
+            except Exception as e:
+                print(
+                    "QUEUE WORKER ERROR:",
+                    repr(e),
+                    flush=True
+                )
+
+            # Searches are intentionally sparse.
+            # Ultra/Hot direct product checks stay fastest.
+            # Important external/competitor models are
+            # processed faster than broad Amazon discovery.
+            if job.get("priority", 0) >= 85:
+                queue_delay = 45
+            elif job.get("priority", 0) >= 50:
+                queue_delay = 75
+            else:
+                queue_delay = 120
+
+            await asyncio.sleep(
+                queue_delay
+            )
+
+
+
+
+async def deep_discovery():
+    # Backpressure:
+    # External/store triggers are more valuable than broad
+    # discovery. Don't keep adding low-priority work when
+    # the queue is already busy.
+    if len(UNIFIED_AMAZON_QUEUE) >= 60:
+        print(
+            "⏳ DISCOVERY SKIPPED",
+            "| QUEUE =",
+            len(UNIFIED_AMAZON_QUEUE),
+            flush=True
+        )
+        return
+
+    print(
+        "\n🔎 DISCOVERY QUEUE",
+        datetime.now().isoformat(
+            timespec="seconds"
+        ),
+        flush=True
+    )
+
+    if not SOURCE_URLS:
+        return
+
+    start = int(
+        state.get(
+            "source_index",
+            0
+        )
+    )
+
+    batch_count = min(
+        10,
+        len(SOURCE_URLS)
+    )
+
+    queued = 0
+
+    for i in range(batch_count):
+        idx = (
+            start + i
+        ) % len(SOURCE_URLS)
+
+        url = SOURCE_URLS[idx]
+
+        if enqueue_amazon_candidate(
+            source=(
+                "amazon_source:"
+                + str(idx)
+            ),
+            url=url,
+            priority=25,
+            boost_seconds=600,
+            kind="discovery",
+        ):
+            queued += 1
+
+    state["source_index"] = (
+        start + batch_count
+    ) % len(SOURCE_URLS)
+
+    async with lock:
+        save_files()
+
+    print(
+        "🔎 AMAZON SOURCES QUEUED =",
+        queued,
+        "| TOTAL SOURCES =",
+        len(SOURCE_URLS),
+        "| QUEUE =",
+        len(UNIFIED_AMAZON_QUEUE),
+        flush=True
+    )
+
+async def hot_watch_once():
+    async with lock:
+        hot = [
+            dict(x)
+            for x in watch.values()
+            if is_hot(x)
+        ]
+
+    hot.sort(
+        key=lambda x: (
+            to_float(
+                x.get(
+                    "max_seen_price"
+                )
+            ),
+            x.get(
+                "last_seen",
+                0
+            ),
+        ),
+        reverse=True
+    )
+
+    # أسرع 45 منتج عالي الأهمية
+    hot = hot[:45]
+
+    if not hot:
+        print(
+            "⚡ HOT WATCH: empty",
+            flush=True
+        )
+        return
+
+    start = int(
+        state.get(
+            "hot_index",
+            0
+        )
+    )
+
+    batch = [
+        hot[
+            (start + i)
+            % len(hot)
+        ]
+        for i in range(
+            min(5, len(hot))
+        )
+    ]
+
+    state["hot_index"] = (
+        start + len(batch)
+    ) % len(hot)
+
+    semaphore = asyncio.Semaphore(2)
+
+    async with httpx.AsyncClient() as client:
+
+        async def check(rec):
+            async with semaphore:
+                current = await live_price(
+                    client,
+                    rec["url"]
+                )
+
+                if current is None:
+                    return None
+
+                reference = to_float(
+                    rec.get(
+                        "max_seen_price"
+                    )
+                )
+
+                result = {
+                    "asin":
+                        rec["asin"],
+                    "title":
+                        rec["title"],
+                    "url":
+                        rec["url"],
+                    "current_price":
+                        current,
+                    "old_price":
+                        None,
+                }
+
+                if reference <= 0:
+                    return result
+
+                saving = (
+                    reference - current
+                )
+
+                if saving <= 0:
+                    return result
+
+                drop = (
+                    saving
+                    / reference
+                    * 100
+                )
+
+                # هبوط مهم
+                suspicious = (
+                    (
+                        current
+                        <= reference * 0.50
+                        and saving >= 300
+                    )
+                    or
+                    (
+                        current
+                        <= reference * 0.70
+                        and saving >= 1000
+                    )
+                )
+
+                if not suspicious:
+                    return result
+
+                # إعادة تحقق فورية ثانية
+                await asyncio.sleep(1)
+
+                second = await live_price(
+                    client,
+                    rec["url"]
+                )
+
+                if second is None:
+                    return result
+
+                if second > current * 1.05:
+                    print(
+                        "PRICE CHANGED - CANCELLED:",
+                        rec["asin"],
+                        current,
+                        "->",
+                        second,
+                        flush=True
+                    )
+                    return result
+
+                saving2 = (
+                    reference - second
+                )
+
+                if saving2 <= 0:
+                    return result
+
+                drop2 = (
+                    saving2
+                    / reference
+                    * 100
+                )
+
+                await send_alert(
+                    client,
+                    rec,
+                    second,
+                    reference,
+                    drop2,
+                    saving2
+                )
+
+                result[
+                    "current_price"
+                ] = second
+
+                return result
+
+        results = await asyncio.gather(
+            *[
+                check(x)
+                for x in batch
+            ]
+        )
+
+    valid = [
+        x
+        for x in results
+        if x
+    ]
+
+    async with lock:
+        now = int(time.time())
+
+        for item in valid:
+            asin = item["asin"]
+
+            if asin not in watch:
+                continue
+
+            p = to_float(
+                item["current_price"]
+            )
+
+            watch[asin][
+                "last_price"
+            ] = p
+
+            watch[asin][
+                "last_checked"
+            ] = now
+
+            if p > to_float(
+                watch[asin].get(
+                    "max_seen_price"
+                )
+            ):
+                watch[asin][
+                    "max_seen_price"
+                ] = p
+
+            old_min = to_float(
+                watch[asin].get(
+                    "min_seen_price"
+                )
+            )
+
+            if (
+                old_min <= 0
+                or p < old_min
+            ):
+                watch[asin][
+                    "min_seen_price"
+                ] = p
+
+        save_files()
+
+    await cloud_observations(
+        valid
+    )
+
+    print(
+        "⚡ HOT WATCH",
+        datetime.now().strftime(
+            "%H:%M:%S"
+        ),
+        "| CHECKED =",
+        len(batch),
+        "| LIVE =",
+        len(valid),
+        flush=True
+    )
+
+
+async def ultra_hot_once():
+    async with lock:
+        items = [
+            dict(x)
+            for x in watch.values()
+            if is_hot(x)
+        ]
+
+    now_ts = int(time.time())
+
+    items.sort(
+        key=lambda x: (
+            1 if int(x.get("priority_boost_until", 0)) > now_ts else 0,
+            to_float(x.get("max_seen_price")),
+            x.get("last_seen", 0),
+        ),
+        reverse=True
+    )
+
+    # أسرع 20 منتج
+    items = items[:20]
+
+    if not items:
+        print("🚨 ULTRA HOT: empty", flush=True)
+        return
+
+    ultra_index = int(
+        state.get("ultra_index", 0)
+    )
+
+    # 10 منتجات كل دورة
+    batch = [
+        items[
+            (ultra_index + i)
+            % len(items)
+        ]
+        for i in range(
+            min(6, len(items))
+        )
+    ]
+
+    state["ultra_index"] = (
+        ultra_index + len(batch)
+    ) % len(items)
+
+    semaphore = asyncio.Semaphore(8)
+
+    async with httpx.AsyncClient() as client:
+
+        async def check(rec):
+            async with semaphore:
+                current = await live_price(
+                    client,
+                    rec["url"]
+                )
+
+                if current is None:
+                    return None
+
+                reference = to_float(
+                    rec.get("max_seen_price")
+                )
+
+                result = {
+                    "asin": rec["asin"],
+                    "title": rec["title"],
+                    "url": rec["url"],
+                    "current_price": current,
+                }
+
+                if reference <= 0:
+                    return result
+
+                saving = reference - current
+
+                if saving <= 0:
+                    return result
+
+                drop = (
+                    saving
+                    / reference
+                    * 100
+                )
+
+                suspicious = (
+                    (
+                        current <= reference * 0.50
+                        and saving >= 300
+                    )
+                    or
+                    (
+                        current <= reference * 0.70
+                        and saving >= 1000
+                    )
+                )
+
+                if not suspicious:
+                    return result
+
+                # إعادة تحقق فورية
+                await asyncio.sleep(0.7)
+
+                second = await live_price(
+                    client,
+                    rec["url"]
+                )
+
+                if second is None:
+                    return result
+
+                if second > current * 1.05:
+                    print(
+                        "🚨 ULTRA CANCELLED:",
+                        rec["asin"],
+                        current,
+                        "->",
+                        second,
+                        flush=True
+                    )
+                    return result
+
+                saving2 = reference - second
+
+                if saving2 <= 0:
+                    return result
+
+                drop2 = (
+                    saving2
+                    / reference
+                    * 100
+                )
+
+                await send_alert(
+                    client,
+                    rec,
+                    second,
+                    reference,
+                    drop2,
+                    saving2
+                )
+
+                result["current_price"] = second
+
+                return result
+
+        results = await asyncio.gather(
+            *[
+                check(x)
+                for x in batch
+            ]
+        )
+
+    valid = [
+        x for x in results
+        if x
+    ]
+
+    async with lock:
+        now = int(time.time())
+
+        for item in valid:
+            asin = item["asin"]
+
+            if asin not in watch:
+                continue
+
+            price = to_float(
+                item["current_price"]
+            )
+
+            watch[asin]["last_price"] = price
+            watch[asin]["ultra_checked"] = now
+
+            if price > to_float(
+                watch[asin].get(
+                    "max_seen_price"
+                )
+            ):
+                watch[asin][
+                    "max_seen_price"
+                ] = price
+
+        save_files()
+
+    print(
+        "🚨 ULTRA HOT",
+        datetime.now().strftime("%H:%M:%S"),
+        "| CHECKED =",
+        len(batch),
+        "| LIVE =",
+        len(valid),
+        flush=True
+    )
+
+
+async def ultra_hot_loop():
+    await asyncio.sleep(5)
+
+    while True:
+        if amazon_circuit_open():
+            remaining = max(
+                1,
+                int(
+                    AMAZON_CIRCUIT_UNTIL
+                    - time.monotonic()
+                )
+            )
+
+            print(
+                "⏸️ ULTRA WAITING FOR AMAZON",
+                "| CIRCUIT =",
+                remaining,
+                "sec",
+                flush=True
+            )
+
+            await asyncio.sleep(
+                min(15, remaining)
+            )
+            continue
+
+        started = time.monotonic()
+
+        try:
+            await ultra_hot_once()
+        except Exception as e:
+            print(
+                "ULTRA HOT ERROR:",
+                repr(e),
+                flush=True
+            )
+
+        elapsed = (
+            time.monotonic()
+            - started
+        )
+
+        # الدورة التالية تبدأ كل 7 ثوانٍ تقريبًا
+        await asyncio.sleep(
+            max(
+                1,
+                (
+                    10
+                    if amazon_recovering()
+                    else 7
+                ) - elapsed
+            )
+        )
+
+
+def model_tokens(title):
+    title = str(title or "").upper()
+
+    tokens = re.findall(
+        r"\b[A-Z0-9][A-Z0-9._/-]{3,}\b",
+        title
+    )
+
+    good = []
+
+    for token in tokens:
+        has_letter = any(c.isalpha() for c in token)
+        has_digit = any(c.isdigit() for c in token)
+
+        if has_letter and has_digit:
+            good.append(token)
+
+    return good[:4]
+
+
+
+async def competitor_trigger_once():
+    try:
+        con = connect()
+
+        rows = con.execute(
+            """
+            SELECT store,title,current_price,seen_at
+            FROM market_observations
+            WHERE lower(store) IN ('jumia','2b')
+            ORDER BY seen_at DESC
+            LIMIT 80
+            """
+        ).fetchall()
+
+        con.close()
+
+    except Exception as e:
+        print(
+            "COMPETITOR DB ERROR:",
+            repr(e),
+            flush=True
+        )
+        return
+
+    seen = set()
+    queued = 0
+
+    for row in rows:
+        title = row["title"]
+
+        query = build_trigger_query(
+            title
+        )
+
+        if not query:
+            continue
+
+        key = query.lower()
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        store = str(
+            row["store"]
+        ).lower()
+
+        if enqueue_amazon_candidate(
+            source=store,
+            title=title,
+            query=query,
+            priority=100,
+            boost_seconds=1200,
+            kind="competitor",
+        ):
+            queued += 1
+
+        if queued >= 8:
+            break
+
+    print(
+        "🎯 COMPETITOR QUEUE",
+        "| QUEUED =",
+        queued,
+        "| TOTAL QUEUE =",
+        len(UNIFIED_AMAZON_QUEUE),
+        flush=True
+    )
+
+async def competitor_loop():
+    # خلي أول Discovery يشتغل الأول
+    await asyncio.sleep(20)
+
+    while True:
+        try:
+            await competitor_trigger_once()
+        except Exception as e:
+            print(
+                "COMPETITOR LOOP ERROR:",
+                repr(e),
+                flush=True
+            )
+
+        # تحديث كل دقيقة
+        await asyncio.sleep(60)
+
+
+EXTERNAL_SOURCES = [
+    {
+        "name": "kenzz",
+        "url": "https://kenzz.com/en",
+        "interval": 60,
+    },
+    {
+        "name": "yaoota",
+        "url": "https://yaoota.online/eg/en/trending",
+        "interval": 45,
+    },
+    {
+        "name": "dealhunter",
+        "url": "https://dealhunters.org/",
+        "interval": 180,
+    },
+]
+
+external_last_run = {}
+
+
+def external_product_titles(html):
+    soup = BeautifulSoup(html, "html.parser")
+
+    ignore = {
+        "home", "deals", "trending", "categories",
+        "stores", "search", "about", "amazon",
+        "jumia", "noon", "buy now", "get deal",
+        "check price", "shop all",
+    }
+
+    titles = []
+    seen = set()
+
+    for el in soup.select("h2, h3, h4, a"):
+        text = " ".join(
+            el.get_text(" ", strip=True).split()
+        )
+
+        if not (12 <= len(text) <= 180):
+            continue
+
+        low = text.lower()
+
+        if low in ignore:
+            continue
+
+        if low in seen:
+            continue
+
+        # Product-like text only.
+        useful = (
+            any(c.isdigit() for c in text)
+            or len(text.split()) >= 4
+        )
+
+        if not useful:
+            continue
+
+        seen.add(low)
+        titles.append(text)
+
+    return titles[:20]
+
+
+
+async def external_source_scan(source):
+    name = source["name"]
+
+    async with httpx.AsyncClient() as client:
+        html = await fetch_html(
+            client,
+            source["url"]
+        )
+
+    if not html:
+        print(
+            "🌐 EXTERNAL SOURCE FAILED:",
+            name,
+            flush=True
+        )
+        return
+
+    titles = external_product_titles(
+        html
+    )
+
+    priority_map = {
+        "kenzz": 95,
+        "yaoota": 85,
+        "dealhunter": 85,
+    }
+
+    queued = 0
+
+    for title in titles:
+        query = build_trigger_query(
+            title
+        )
+
+        if not query:
+            continue
+
+        if enqueue_amazon_candidate(
+            source=name,
+            title=title,
+            query=query,
+            priority=priority_map.get(
+                name,
+                75
+            ),
+            boost_seconds=1200,
+            kind="external",
+        ):
+            queued += 1
+
+        if queued >= 8:
+            break
+
+    print(
+        "🌐 EXTERNAL QUEUE",
+        name,
+        "| TITLES =",
+        len(titles),
+        "| QUEUED =",
+        queued,
+        "| TOTAL QUEUE =",
+        len(UNIFIED_AMAZON_QUEUE),
+        flush=True
+    )
+
+async def external_sources_loop():
+    await asyncio.sleep(25)
+
+    while True:
+        now = time.monotonic()
+
+        for source in EXTERNAL_SOURCES:
+            name = source["name"]
+            interval = source["interval"]
+
+            last = external_last_run.get(
+                name,
+                0
+            )
+
+            if now - last < interval:
+                continue
+
+            external_last_run[name] = now
+
+            try:
+                await external_source_scan(
+                    source
+                )
+            except Exception as e:
+                print(
+                    "EXTERNAL LOOP ERROR:",
+                    name,
+                    repr(e),
+                    flush=True
+                )
+
+        await asyncio.sleep(10)
+
+
+MANUAL_FILE = ROOT / ".amazon_manual_watch.txt"
+
+EXTRA_STORE_INTERVALS = {
+    "raya": 120,
+    "btech": 180,
+    "dream2000": 300,
+}
+
+extra_store_last = {}
+manual_processed = set()
+
+
+
+async def trigger_store_to_amazon(store):
+    try:
+        deals = await run_store(
+            store
+        )
+
+    except Exception as e:
+        print(
+            "🎯 EXTRA STORE ERROR:",
+            store,
+            repr(e),
+            flush=True
+        )
+        return
+
+    deals = sorted(
+        deals,
+        key=lambda d: getattr(
+            d,
+            "discount_percent",
+            0
+        ),
+        reverse=True
+    )[:40]
+
+    queued = 0
+    seen = set()
+
+    for d in deals:
+        query = build_trigger_query(
+            d.title
+        )
+
+        if not query:
+            continue
+
+        key = query.lower()
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        if enqueue_amazon_candidate(
+            source=store,
+            title=d.title,
+            query=query,
+            priority=90,
+            boost_seconds=1200,
+            kind="store",
+        ):
+            queued += 1
+
+        if queued >= 10:
+            break
+
+    print(
+        "🎯 EXTRA STORE QUEUE",
+        store,
+        "| DEALS =",
+        len(deals),
+        "| QUEUED =",
+        queued,
+        "| TOTAL QUEUE =",
+        len(UNIFIED_AMAZON_QUEUE),
+        flush=True
+    )
+
+async def extra_store_trigger_loop():
+    await asyncio.sleep(30)
+
+    while True:
+        now = time.monotonic()
+
+        for store, interval in EXTRA_STORE_INTERVALS.items():
+
+            if (
+                now
+                - extra_store_last.get(store, 0)
+                < interval
+            ):
+                continue
+
+            extra_store_last[store] = now
+
+            try:
+                await trigger_store_to_amazon(
+                    store
+                )
+            except Exception as e:
+                print(
+                    "EXTRA STORE LOOP ERROR:",
+                    store,
+                    repr(e),
+                    flush=True
+                )
+
+        await asyncio.sleep(15)
+
+
+async def manual_watch_loop():
+    MANUAL_FILE.touch(exist_ok=True)
+
+    await asyncio.sleep(8)
+
+    while True:
+        try:
+            lines = MANUAL_FILE.read_text(
+                encoding="utf-8"
+            ).splitlines()
+
+            for raw in lines:
+                raw = raw.strip()
+
+                if not raw or raw.startswith("#"):
+                    continue
+
+                m = re.search(
+                    r"\b([A-Z0-9]{10})\b",
+                    raw.upper()
+                )
+
+                if not m:
+                    continue
+
+                asin = m.group(1)
+
+                if asin in manual_processed:
+                    continue
+
+                manual_processed.add(asin)
+
+                if asin in watch:
+                    watch[asin][
+                        "priority_boost_until"
+                    ] = int(time.time()) + 86400
+
+                    watch[asin][
+                        "manual_watch"
+                    ] = True
+
+                    print(
+                        "📌 MANUAL -> ULTRA HOT:",
+                        asin,
+                        flush=True
+                    )
+
+                    continue
+
+                async with httpx.AsyncClient() as client:
+                    html = await fetch_html(
+                        client,
+                        AMAZON
+                        + "/s?k="
+                        + quote_plus(asin)
+                    )
+
+                items = parse_search(html)
+
+                exact = next(
+                    (
+                        x for x in items
+                        if x["asin"] == asin
+                    ),
+                    None
+                )
+
+                if not exact:
+                    print(
+                        "📌 MANUAL ASIN NOT FOUND:",
+                        asin,
+                        flush=True
+                    )
+                    continue
+
+                add_product(
+                    exact,
+                    "manual"
+                )
+
+                watch[asin][
+                    "priority_boost_until"
+                ] = int(time.time()) + 86400
+
+                watch[asin][
+                    "manual_watch"
+                ] = True
+
+                async with lock:
+                    save_files()
+
+                print(
+                    "📌 MANUAL NEW -> ULTRA HOT:",
+                    asin,
+                    flush=True
+                )
+
+        except Exception as e:
+            print(
+                "MANUAL WATCH ERROR:",
+                repr(e),
+                flush=True
+            )
+
+        await asyncio.sleep(5)
+
+
+async def discovery_loop():
+    while True:
+        if not amazon_secondary_allowed():
+            await asyncio.sleep(20)
+            continue
+
+        try:
+            await deep_discovery()
+        except Exception as e:
+            print(
+                "DISCOVERY LOOP ERROR:",
+                repr(e),
+                flush=True
+            )
+
+        # اكتشاف شامل كل 3 دقائق
+        await asyncio.sleep(180)
+
+
+async def hot_loop():
+    # اسمح لأول discovery يبدأ
+    await asyncio.sleep(12)
+
+    while True:
+        if not amazon_secondary_allowed():
+            await asyncio.sleep(15)
+            continue
+
+        try:
+            await hot_watch_once()
+        except Exception as e:
+            print(
+                "HOT LOOP ERROR:",
+                repr(e),
+                flush=True
+            )
+
+        await asyncio.sleep(15)
+
+
+async def main():
+    print(
+        "🚀 AMAZON MULTI-SOURCE RADAR STARTED",
+        flush=True
+    )
+
+    await asyncio.gather(
+        discovery_loop(),
+        hot_loop(),
+        ultra_hot_loop(),
+        competitor_loop(),
+        external_sources_loop(),
+        extra_store_trigger_loop(),
+        manual_watch_loop(),
+        unified_queue_loop()
+    )
+
+
+asyncio.run(main())

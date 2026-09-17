@@ -1,0 +1,4 @@
+NOON_STATUS=DEGRADED
+Repeated controlled access tests timed out and returned 0 products.
+Noon is isolated from the hot scan so it cannot delay the bot.
+Policy priority is retained for later re-enable.

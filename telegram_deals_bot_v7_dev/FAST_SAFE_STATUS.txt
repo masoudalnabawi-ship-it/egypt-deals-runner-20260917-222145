@@ -1,0 +1,11 @@
+V11 FAST SAFE ACTIVE
+timestamp=20260916_161238
+v11_pid=8853
+cycle_minutes=2
+stores=noon,noon_minutes,jumia,2b,btech,raya,dream2000,carrefour,raneen,kenzz
+noon=isolated timeout + circuit breaker
+jumia=page1 hot + rotating deep coverage
+amazon_radar_pid=29199
+amazon_bot_pid=26029
+amazon_modified=NO
+production_modified=NO
