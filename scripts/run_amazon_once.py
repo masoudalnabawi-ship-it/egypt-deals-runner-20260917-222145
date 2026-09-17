@@ -68,7 +68,7 @@ async def scan_department_batch(count=8):
             page = max(1, min(page, 20))
 
             url = (
-                radar.AMAZ
+                radar.AMAZON
                 + "/s?i="
                 + quote_plus(dept_index)
                 + "&s=featured-rank&page="

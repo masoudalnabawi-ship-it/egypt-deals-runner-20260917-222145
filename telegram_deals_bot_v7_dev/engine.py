@@ -369,15 +369,15 @@ async def _capture_any_store_screenshot(url):
             )
 
             context = await browser.new_context(
-                viewport={"width": 720, "height": 1280},
+                viewport={"width": 1365, "height": 1000},
                 device_scale_factor=1,
-                is_mobile=True,
-                has_touch=True,
+                is_mobile=False,
+                has_touch=False,
                 locale="ar-EG",
                 user_agent=(
-                    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) "
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/152.0.0.0 Mobile Safari/537.36"
+                    "Chrome/152.0.0.0 Safari/537.36"
                 ),
             )
 

@@ -73,15 +73,15 @@ async def _capture_amazon_page_screenshot(url):
             )
 
             context = await browser.new_context(
-                viewport={"width": 720, "height": 1280},
+                viewport={"width": 1365, "height": 1000},
                 device_scale_factor=1,
-                is_mobile=True,
-                has_touch=True,
+                is_mobile=False,
+                has_touch=False,
                 locale="ar-EG",
                 user_agent=(
-                    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) "
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/152.0.0.0 Mobile Safari/537.36"
+                    "Chrome/152.0.0.0 Safari/537.36"
                 ),
                 extra_http_headers={
                     "Accept-Language": "ar-EG,ar;q=0.9,en;q=0.8"
@@ -119,7 +119,7 @@ async def _capture_amazon_page_screenshot(url):
                 return None
 
             markers = await page.locator(
-                "#productTitle, #title, #title_feature_div, input#ASIN, #dp"
+                "#productTitle, #title, #title_feature_div, input#ASIN, #dp, #dp-container, #centerCol, #buybox"
             ).count()
 
             if markers <= 0:
