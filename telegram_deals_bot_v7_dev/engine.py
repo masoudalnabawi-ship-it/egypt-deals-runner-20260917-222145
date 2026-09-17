@@ -343,6 +343,100 @@ async def _send_direct_flash_review(
     }
 
 
+
+async def _capture_any_store_screenshot(url):
+    import base64
+
+    if not str(url or "").startswith("http"):
+        return None
+
+    try:
+        from playwright.async_api import async_playwright
+    except Exception as exc:
+        log.warning("SCREENSHOT playwright unavailable: %r", exc)
+        return None
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                channel="chrome",
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+
+            context = await browser.new_context(
+                viewport={"width": 720, "height": 1280},
+                device_scale_factor=1,
+                is_mobile=True,
+                has_touch=True,
+                locale="ar-EG",
+                user_agent=(
+                    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/152.0.0.0 Mobile Safari/537.36"
+                ),
+            )
+
+            page = await context.new_page()
+
+            await page.goto(
+                str(url),
+                wait_until="domcontentloaded",
+                timeout=18000,
+            )
+
+            await page.wait_for_timeout(1200)
+
+            title = (await page.title()).lower()
+
+            try:
+                body = (
+                    await page.locator("body").inner_text(timeout=3000)
+                ).lower()
+            except Exception:
+                body = ""
+
+            blocked_words = (
+                "robot check",
+                "captcha",
+                "access denied",
+                "forbidden",
+                "enter the characters you see below",
+                "أدخل الأحرف التي تراها",
+            )
+
+            if not body.strip() or any(x in title or x in body for x in blocked_words):
+                await context.close()
+                await browser.close()
+                return None
+
+            shot = await page.screenshot(
+                type="jpeg",
+                quality=62,
+                full_page=False,
+            )
+
+            await context.close()
+            await browser.close()
+
+            if not shot or len(shot) > 7_000_000:
+                return None
+
+            return {
+                "page_screenshot_b64":
+                    base64.b64encode(shot).decode("ascii"),
+                "page_screenshot_mime": "image/jpeg",
+            }
+
+    except Exception as exc:
+        log.warning("SCREENSHOT failed | %s | %r", url, exc)
+        return None
+
+
 async def send_cloud_review(deal, fp, report, signal=None):
     api_url = os.getenv("CLOUD_API_URL", "").rstrip("/")
     api_key = os.getenv("CLOUD_API_KEY", "")
@@ -351,6 +445,24 @@ async def send_cloud_review(deal, fp, report, signal=None):
         raise RuntimeError("CLOUD_API_URL or CLOUD_API_KEY is missing")
 
     signal = signal or {}
+
+    try:
+        screenshot = await asyncio.wait_for(
+            _capture_any_store_screenshot(deal.url),
+            timeout=22,
+        )
+    except Exception:
+        screenshot = None
+
+    # Strict rule: NO screenshot = NO review.
+    if not screenshot:
+        return {
+            "results": [{
+                "ok": False,
+                "error": "screenshot_required",
+            }]
+        }
+
     effective_discount = float(
         signal.get("effective_discount_percent")
         or deal.discount_percent
@@ -394,6 +506,8 @@ async def send_cloud_review(deal, fp, report, signal=None):
         "discount_percent": effective_discount,
         "url": deal.url,
         "image_url": getattr(deal, "image_url", None),
+        "page_screenshot_b64": screenshot["page_screenshot_b64"],
+        "page_screenshot_mime": screenshot["page_screenshot_mime"],
         "live_rechecked": getattr(deal, "live_rechecked", None),
         "live_recheck_price": getattr(deal, "live_recheck_price", None),
         "live_recheck_source": getattr(deal, "live_recheck_source", None),

@@ -211,7 +211,14 @@ async def _send_amazon_independent_review(payload):
                 data = _json.loads(text)
             except Exception:
                 data = {}
-            return _CloudReviewResponse(int(resp.status), text, data)
+            results = data.get("results") or []
+            accepted = bool(data.get("ok")) and all(
+                bool(x.get("ok"))
+                for x in results
+                if isinstance(x, dict)
+            )
+            code = int(resp.status) if accepted else 422
+            return _CloudReviewResponse(code, text, data)
 
     try:
         r = await asyncio.to_thread(_post)
