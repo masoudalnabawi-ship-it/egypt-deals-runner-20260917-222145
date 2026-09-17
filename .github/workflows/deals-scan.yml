@@ -21,8 +21,8 @@ jobs:
       CLOUD_API_URL: ${{ secrets.CLOUD_API_URL }}
       CLOUD_API_KEY: ${{ secrets.CLOUD_API_KEY }}
       DIRECT_FLASH_REVIEW: "false"
-      V11_ENABLED_STORES: "noon,noon_minutes,jumia,2b,btech,raya,dream2000,carrefour,raneen,kenzz"
-      ENABLED_STORES: "noon,noon_minutes,jumia,2b,btech,raya,dream2000,carrefour,raneen,kenzz"
+      V11_ENABLED_STORES: "noon,2b,btech"
+      ENABLED_STORES: "noon,2b,btech"
       MIN_DISCOUNT_PERCENT: "5"
       MIN_SAVING_EGP: "0"
       MAX_POSTS_PER_CYCLE: "10"
@@ -52,11 +52,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash scripts/state.sh hydrate
 
-      - name: Non-Amazon stores — one verified scan
-        run: python scripts/run_v11_once.py
-
       - name: Amazon — bounded priority scan
         run: python scripts/run_amazon_once.py
+
+      - name: Noon BTECH 2B — one verified scan
+        run: python scripts/run_v11_once.py
 
       - name: Collect runtime state
         if: always()
